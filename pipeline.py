@@ -8,9 +8,21 @@ import subprocess
 import json
 
 def fetch_latest_papers(max_results=3):
-    query = 'cat:cs.AI OR cat:cs.CL OR cat:cs.SE'
+    import re
+    # Get existing downloaded papers to deduplicate
+    existing_papers = set()
+    for item in os.listdir('.'):
+        if re.match(r'\d{4}-\d{2}-\d{2}', item) and os.path.isdir(item):
+            for sub in os.listdir(item):
+                if os.path.isdir(os.path.join(item, sub)):
+                    existing_papers.add(sub)
+
+    query = 'all:"AI Agents" OR all:"LLM" OR all:"Language Models"'
     query_encoded = urllib.parse.quote(query)
-    url = f'http://export.arxiv.org/api/query?search_query={query_encoded}&sortBy=submittedDate&sortOrder=descending&max_results={max_results}'
+
+    # Fetch a bit more than max_results to account for potential duplicates
+    fetch_amount = max_results + 10
+    url = f'http://export.arxiv.org/api/query?search_query={query_encoded}&sortBy=submittedDate&sortOrder=descending&max_results={fetch_amount}'
 
     response = urllib.request.urlopen(url)
     data = response.read()
@@ -20,6 +32,13 @@ def fetch_latest_papers(max_results=3):
     papers = []
     for entry in root.findall('atom:entry', ns):
         title = entry.find('atom:title', ns).text.replace('\n', ' ').strip()
+
+        # Check if already downloaded
+        safe_title = re.sub(r'[^a-zA-Z0-9\s-]', '', title).strip().lower()
+        safe_title = re.sub(r'[\s]+', '-', safe_title)
+        if safe_title in existing_papers:
+            continue
+
         published = entry.find('atom:published', ns).text
         summary = entry.find('atom:summary', ns).text.replace('\n', ' ').strip()
         authors = [author.find('atom:name', ns).text for author in entry.findall('atom:author', ns)]
@@ -38,6 +57,10 @@ def fetch_latest_papers(max_results=3):
             'pdf_url': pdf_url,
             'summary': summary
         })
+
+        if len(papers) >= max_results:
+            break
+
     return papers
 
 def create_directory_structure(date_str, title):
@@ -121,6 +144,7 @@ def generate_summary(text, title, abstract):
 
     prompt = f"""
 Please summarize the following research paper titled "{title}".
+Explain it like you are explaining to a higher secondary student. Keep the tone technical, objective, and clear. Do not hallucinate details. If a societal benefit is not explicitly mentioned, infer a logical one based strictly on its specialized sector utility.
 Abstract: {abstract}
 Excerpt: {text[:10000]}
 
@@ -141,7 +165,6 @@ Format the output EXACTLY as follows, answering these specific questions:
 ## 🌍 Societal Impact & Sector Benefits
 - How does this research benefit society or its specialized industry sector?
 - What are the practical, real-world use cases or downstream applications of this work?
-If societal benefits are not explicitly mentioned, infer a logical one based strictly on its specialized sector utility.
 """
 
     req = urllib.request.Request(
