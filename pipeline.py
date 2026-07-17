@@ -7,8 +7,16 @@ import fitz
 import subprocess
 import json
 
-def fetch_latest_papers(max_results=3):
-    query = 'cat:cs.AI OR cat:cs.CL OR cat:cs.SE'
+def get_seen_papers():
+    seen = set()
+    for item in os.listdir('.'):
+        if os.path.isdir(item) and item.startswith('202'):
+            for paper_dir in os.listdir(item):
+                seen.add(paper_dir)
+    return seen
+
+def fetch_latest_papers(max_results=15):
+    query = 'all:"AI Agent" OR all:"LLM" OR all:"Generative AI" OR all:"Large Language Model"'
     query_encoded = urllib.parse.quote(query)
     url = f'http://export.arxiv.org/api/query?search_query={query_encoded}&sortBy=submittedDate&sortOrder=descending&max_results={max_results}'
 
@@ -18,8 +26,17 @@ def fetch_latest_papers(max_results=3):
     ns = {'atom': 'http://www.w3.org/2005/Atom'}
 
     papers = []
+    seen = get_seen_papers()
+    import re
+
     for entry in root.findall('atom:entry', ns):
         title = entry.find('atom:title', ns).text.replace('\n', ' ').strip()
+        safe_title = re.sub(r'[^a-zA-Z0-9\s-]', '', title).strip().lower()
+        safe_title = re.sub(r'[\s]+', '-', safe_title)
+
+        if safe_title in seen:
+            continue
+
         published = entry.find('atom:published', ns).text
         summary = entry.find('atom:summary', ns).text.replace('\n', ' ').strip()
         authors = [author.find('atom:name', ns).text for author in entry.findall('atom:author', ns)]
@@ -38,6 +55,8 @@ def fetch_latest_papers(max_results=3):
             'pdf_url': pdf_url,
             'summary': summary
         })
+        if len(papers) == 3:
+            break
     return papers
 
 def create_directory_structure(date_str, title):
@@ -120,11 +139,11 @@ def generate_summary(text, title, abstract):
         return parse_summary_from_text(text, abstract)
 
     prompt = f"""
-Please summarize the following research paper titled "{title}".
+Please summarize the following research paper titled "{title}". Explain the concepts clearly, as if you are explaining them to a higher secondary student.
 Abstract: {abstract}
 Excerpt: {text[:10000]}
 
-Format the output EXACTLY as follows, answering these specific questions:
+Format the output EXACTLY as follows, answering these specific questions in clear, simple language appropriate for a higher secondary student:
 ## 🎯 Problem Statement
 - What is the core challenge, flaw, or gap in existing research that this paper is trying to solve?
 - Why is this problem difficult or important?
