@@ -17,7 +17,7 @@ def fetch_latest_papers(max_results=3):
                 if os.path.isdir(os.path.join(item, sub)):
                     existing_papers.add(sub)
 
-    query = 'all:"AI Agents" OR all:"LLM" OR all:"Language Models"'
+    query = 'all:"AI Agents" OR all:"LLM Architectures" OR all:"new technologies"'
     query_encoded = urllib.parse.quote(query)
 
     # Fetch a bit more than max_results to account for potential duplicates
