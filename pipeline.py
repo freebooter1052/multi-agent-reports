@@ -1,5 +1,6 @@
 import urllib.request
 import urllib.parse
+import urllib.error
 import xml.etree.ElementTree as ET
 import datetime
 import os
@@ -17,15 +18,44 @@ def fetch_latest_papers(max_results=3):
                 if os.path.isdir(os.path.join(item, sub)):
                     existing_papers.add(sub)
 
-    query = 'all:"AI Agents" OR all:"LLM Architectures" OR all:"new technologies"'
+    query = 'all:"multi agent systems" OR all:"multi-agent systems"'
     query_encoded = urllib.parse.quote(query)
 
     # Fetch a bit more than max_results to account for potential duplicates
     fetch_amount = max_results + 10
     url = f'http://export.arxiv.org/api/query?search_query={query_encoded}&sortBy=submittedDate&sortOrder=descending&max_results={fetch_amount}'
 
-    response = urllib.request.urlopen(url)
-    data = response.read()
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+
+    import time
+    max_retries = 5
+    retry_delay = 1
+    data = None
+    for attempt in range(max_retries):
+        try:
+            with urllib.request.urlopen(req) as response:
+                data = response.read()
+                break
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                if attempt < max_retries - 1:
+                    print(f"Rate limited (429). Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    raise
+            else:
+                raise
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"Error fetching data: {e}. Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+                retry_delay *= 2
+            else:
+                raise
+
+    if not data:
+        raise Exception("Failed to fetch data from arXiv API after retries.")
     root = ET.fromstring(data)
     ns = {'atom': 'http://www.w3.org/2005/Atom'}
 
@@ -144,7 +174,7 @@ def generate_summary(text, title, abstract):
 
     prompt = f"""
 Please summarize the following research paper titled "{title}".
-Explain it like you are explaining to a higher secondary student. Keep the tone technical, objective, and clear. Do not hallucinate details. If a societal benefit is not explicitly mentioned, infer a logical one based strictly on its specialized sector utility.
+Explain it like you are explaining to a higher secondary student using simple analogies. Keep the tone technical, objective, and clear. Do not hallucinate details. Strictly avoid unexplained jargon. If a societal benefit is not explicitly mentioned, infer a logical one based strictly on its specialized sector utility.
 Abstract: {abstract}
 Excerpt: {text[:10000]}
 
