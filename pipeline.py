@@ -1,11 +1,13 @@
 import urllib.request
 import urllib.parse
+import urllib.error
 import xml.etree.ElementTree as ET
 import datetime
 import os
 import fitz
 import subprocess
 import json
+import time
 
 def fetch_latest_papers(max_results=3):
     import re
@@ -17,15 +19,37 @@ def fetch_latest_papers(max_results=3):
                 if os.path.isdir(os.path.join(item, sub)):
                     existing_papers.add(sub)
 
-    query = 'all:"AI Agents" OR all:"LLM Architectures" OR all:"new technologies"'
+    query = 'all:"multi agent systems" AND all:"applications"'
     query_encoded = urllib.parse.quote(query)
 
     # Fetch a bit more than max_results to account for potential duplicates
     fetch_amount = max_results + 10
     url = f'http://export.arxiv.org/api/query?search_query={query_encoded}&sortBy=submittedDate&sortOrder=descending&max_results={fetch_amount}'
 
-    response = urllib.request.urlopen(url)
-    data = response.read()
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+
+    max_retries = 5
+    retry_delay = 1
+    data = None
+    for attempt in range(max_retries):
+        try:
+            response = urllib.request.urlopen(req)
+            data = response.read()
+            break
+        except urllib.error.HTTPError as e:
+            if e.code in [301, 429, 503]:
+                if attempt == max_retries - 1:
+                    raise
+                time.sleep(retry_delay)
+                retry_delay *= 2
+            else:
+                raise
+        except urllib.error.URLError as e:
+            if attempt == max_retries - 1:
+                raise
+            time.sleep(retry_delay)
+            retry_delay *= 2
+
     root = ET.fromstring(data)
     ns = {'atom': 'http://www.w3.org/2005/Atom'}
 
@@ -74,9 +98,30 @@ def create_directory_structure(date_str, title):
 def download_pdf(pdf_url, dir_path):
     pdf_path = os.path.join(dir_path, "paper.pdf")
     # Verify SSL by default
-    with urllib.request.urlopen(pdf_url) as response, open(pdf_path, 'wb') as out_file:
-        data = response.read()
-        out_file.write(data)
+    req = urllib.request.Request(pdf_url, headers={'User-Agent': 'Mozilla/5.0'})
+    max_retries = 5
+    retry_delay = 1
+
+    for attempt in range(max_retries):
+        try:
+            with urllib.request.urlopen(req) as response, open(pdf_path, 'wb') as out_file:
+                data = response.read()
+                out_file.write(data)
+            break
+        except urllib.error.HTTPError as e:
+            if e.code in [301, 429, 503]:
+                if attempt == max_retries - 1:
+                    raise
+                time.sleep(retry_delay)
+                retry_delay *= 2
+            else:
+                raise
+        except urllib.error.URLError as e:
+            if attempt == max_retries - 1:
+                raise
+            time.sleep(retry_delay)
+            retry_delay *= 2
+
     return pdf_path
 
 def extract_text(pdf_path):
@@ -144,7 +189,7 @@ def generate_summary(text, title, abstract):
 
     prompt = f"""
 Please summarize the following research paper titled "{title}".
-Explain it like you are explaining to a higher secondary student. Keep the tone technical, objective, and clear. Do not hallucinate details. If a societal benefit is not explicitly mentioned, infer a logical one based strictly on its specialized sector utility.
+Explain it like you are explaining to a higher secondary student and very entry-level developers. Keep the tone technical, objective, and clear. Do not hallucinate details. If a societal benefit is not explicitly mentioned, infer a logical one based strictly on its specialized sector utility.
 Abstract: {abstract}
 Excerpt: {text[:10000]}
 
