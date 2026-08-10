@@ -1,11 +1,31 @@
 import urllib.request
 import urllib.parse
+import urllib.error
 import xml.etree.ElementTree as ET
 import datetime
 import os
-import fitz
+import pymupdf
 import subprocess
 import json
+
+def fetch_arxiv_with_retry(url, max_retries=5):
+    import time
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    for attempt in range(max_retries):
+        try:
+            return urllib.request.urlopen(req)
+        except urllib.error.HTTPError as e:
+            if e.code in [301, 429, 503]:
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+            raise
+        except urllib.error.URLError as e:
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            raise
+    raise Exception("Max retries reached")
 
 def fetch_latest_papers(max_results=3):
     import re
@@ -17,14 +37,14 @@ def fetch_latest_papers(max_results=3):
                 if os.path.isdir(os.path.join(item, sub)):
                     existing_papers.add(sub)
 
-    query = 'all:"AI Agents" OR all:"LLM Architectures" OR all:"new technologies"'
+    query = 'all:"multi agent systems" AND all:"applications"'
     query_encoded = urllib.parse.quote(query)
 
     # Fetch a bit more than max_results to account for potential duplicates
     fetch_amount = max_results + 10
     url = f'http://export.arxiv.org/api/query?search_query={query_encoded}&sortBy=submittedDate&sortOrder=descending&max_results={fetch_amount}'
 
-    response = urllib.request.urlopen(url)
+    response = fetch_arxiv_with_retry(url)
     data = response.read()
     root = ET.fromstring(data)
     ns = {'atom': 'http://www.w3.org/2005/Atom'}
@@ -80,7 +100,7 @@ def download_pdf(pdf_url, dir_path):
     return pdf_path
 
 def extract_text(pdf_path):
-    doc = fitz.open(pdf_path)
+    doc = pymupdf.open(pdf_path)
     text = ""
     for i in range(min(5, len(doc))): # Parse up to 5 pages
         text += doc[i].get_text()
@@ -144,7 +164,7 @@ def generate_summary(text, title, abstract):
 
     prompt = f"""
 Please summarize the following research paper titled "{title}".
-Explain it like you are explaining to a higher secondary student. Keep the tone technical, objective, and clear. Do not hallucinate details. If a societal benefit is not explicitly mentioned, infer a logical one based strictly on its specialized sector utility.
+Explain it like you are explaining to a higher secondary student and very entry-level developers. Keep the tone technical, objective, and clear. Do not hallucinate details. If a societal benefit is not explicitly mentioned, infer a logical one based strictly on its specialized sector utility.
 Abstract: {abstract}
 Excerpt: {text[:10000]}
 
