@@ -3,9 +3,30 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 import datetime
 import os
-import fitz
+import pymupdf
 import subprocess
 import json
+import time
+
+def fetch_url_with_retry(req_or_url, max_retries=5):
+    if isinstance(req_or_url, str):
+        req = urllib.request.Request(req_or_url, headers={'User-Agent': 'Mozilla/5.0'})
+    else:
+        req = req_or_url
+        if not req.has_header('User-agent'):
+            req.add_header('User-Agent', 'Mozilla/5.0')
+
+    for attempt in range(max_retries):
+        try:
+            return urllib.request.urlopen(req)
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 503, 301):
+                wait_time = 2 ** attempt
+                print(f"HTTPError {e.code} encountered. Retrying in {wait_time} seconds (attempt {attempt + 1}/{max_retries})...")
+                time.sleep(wait_time)
+            else:
+                raise
+    raise Exception(f"Failed to fetch {req.full_url} after {max_retries} retries.")
 
 def fetch_latest_papers(max_results=3):
     import re
@@ -17,14 +38,14 @@ def fetch_latest_papers(max_results=3):
                 if os.path.isdir(os.path.join(item, sub)):
                     existing_papers.add(sub)
 
-    query = 'all:"AI Agents" OR all:"LLM Architectures" OR all:"new technologies"'
+    query = 'all:"multi agent systems" AND all:"applications"'
     query_encoded = urllib.parse.quote(query)
 
     # Fetch a bit more than max_results to account for potential duplicates
     fetch_amount = max_results + 10
     url = f'http://export.arxiv.org/api/query?search_query={query_encoded}&sortBy=submittedDate&sortOrder=descending&max_results={fetch_amount}'
 
-    response = urllib.request.urlopen(url)
+    response = fetch_url_with_retry(url)
     data = response.read()
     root = ET.fromstring(data)
     ns = {'atom': 'http://www.w3.org/2005/Atom'}
@@ -74,13 +95,13 @@ def create_directory_structure(date_str, title):
 def download_pdf(pdf_url, dir_path):
     pdf_path = os.path.join(dir_path, "paper.pdf")
     # Verify SSL by default
-    with urllib.request.urlopen(pdf_url) as response, open(pdf_path, 'wb') as out_file:
+    with fetch_url_with_retry(pdf_url) as response, open(pdf_path, 'wb') as out_file:
         data = response.read()
         out_file.write(data)
     return pdf_path
 
 def extract_text(pdf_path):
-    doc = fitz.open(pdf_path)
+    doc = pymupdf.open(pdf_path)
     text = ""
     for i in range(min(5, len(doc))): # Parse up to 5 pages
         text += doc[i].get_text()
@@ -144,7 +165,7 @@ def generate_summary(text, title, abstract):
 
     prompt = f"""
 Please summarize the following research paper titled "{title}".
-Explain it like you are explaining to a higher secondary student. Keep the tone technical, objective, and clear. Do not hallucinate details. If a societal benefit is not explicitly mentioned, infer a logical one based strictly on its specialized sector utility.
+Explain it like you are explaining to a higher secondary student and very entry-level developers. Keep the tone technical, objective, and clear. Do not hallucinate details. If a societal benefit is not explicitly mentioned, infer a logical one based strictly on its specialized sector utility.
 Abstract: {abstract}
 Excerpt: {text[:10000]}
 
@@ -183,7 +204,7 @@ Format the output EXACTLY as follows, answering these specific questions:
     )
 
     try:
-        with urllib.request.urlopen(req) as response:
+        with fetch_url_with_retry(req) as response:
             response_data = json.loads(response.read().decode("utf-8"))
             return response_data["choices"][0]["message"]["content"]
     except Exception as e:
