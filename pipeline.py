@@ -3,9 +3,34 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 import datetime
 import os
-import fitz
+import pymupdf
 import subprocess
 import json
+import time
+
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if code in (301, 302, 303, 307, 308):
+            raise urllib.error.HTTPError(req.full_url, code, msg, headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+def fetch_with_retry(url, max_retries=50):
+    opener = urllib.request.build_opener(NoRedirectHandler())
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    for attempt in range(max_retries):
+        try:
+            return opener.open(req, timeout=10)
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as e:
+            if isinstance(e, urllib.error.HTTPError) and e.code in (301, 302, 303, 307, 308):
+                url = e.headers.get('Location')
+                if not url:
+                     raise e
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                continue
+            if attempt == max_retries - 1:
+                raise e
+            time.sleep(min(60, 2 ** attempt))
+    raise Exception("Max retries exceeded")
 
 def fetch_latest_papers(max_results=3):
     import re
@@ -17,14 +42,14 @@ def fetch_latest_papers(max_results=3):
                 if os.path.isdir(os.path.join(item, sub)):
                     existing_papers.add(sub)
 
-    query = 'all:"AI Agents" OR all:"LLM Architectures" OR all:"new technologies"'
+    query = 'all:"multi agent systems" AND (all:"applications" OR all:"communications")'
     query_encoded = urllib.parse.quote(query)
 
     # Fetch a bit more than max_results to account for potential duplicates
     fetch_amount = max_results + 10
     url = f'http://export.arxiv.org/api/query?search_query={query_encoded}&sortBy=submittedDate&sortOrder=descending&max_results={fetch_amount}'
 
-    response = urllib.request.urlopen(url)
+    response = fetch_with_retry(url)
     data = response.read()
     root = ET.fromstring(data)
     ns = {'atom': 'http://www.w3.org/2005/Atom'}
@@ -74,13 +99,13 @@ def create_directory_structure(date_str, title):
 def download_pdf(pdf_url, dir_path):
     pdf_path = os.path.join(dir_path, "paper.pdf")
     # Verify SSL by default
-    with urllib.request.urlopen(pdf_url) as response, open(pdf_path, 'wb') as out_file:
+    with fetch_with_retry(pdf_url) as response, open(pdf_path, 'wb') as out_file:
         data = response.read()
         out_file.write(data)
     return pdf_path
 
 def extract_text(pdf_path):
-    doc = fitz.open(pdf_path)
+    doc = pymupdf.open(pdf_path)
     text = ""
     for i in range(min(5, len(doc))): # Parse up to 5 pages
         text += doc[i].get_text()
@@ -144,7 +169,7 @@ def generate_summary(text, title, abstract):
 
     prompt = f"""
 Please summarize the following research paper titled "{title}".
-Explain it like you are explaining to a higher secondary student. Keep the tone technical, objective, and clear. Do not hallucinate details. If a societal benefit is not explicitly mentioned, infer a logical one based strictly on its specialized sector utility.
+Explain it like you are explaining to a higher secondary student and very entry-level developers. Keep the tone technical, objective, and clear. Do not hallucinate details. If a societal benefit is not explicitly mentioned, infer a logical one based strictly on its specialized sector utility.
 Abstract: {abstract}
 Excerpt: {text[:10000]}
 
@@ -206,6 +231,8 @@ def generate_readme(paper, dir_path, text):
 ---
 
 {body}
+
+---
 """
     readme_path = os.path.join(dir_path, "README.md")
     with open(readme_path, 'w') as f:
@@ -229,10 +256,13 @@ def main():
             text = ""
         generate_readme(paper, dir_path, text)
 
-    print("Committing changes...")
-    for path in paths_to_add:
-         subprocess.run(["git", "add", path])
-    subprocess.run(["git", "commit", "-m", f"Daily paper pipeline run for {date_str}"])
+    if paths_to_add:
+        print("Committing changes...")
+        for path in paths_to_add:
+             subprocess.run(["git", "add", path])
+        subprocess.run(["git", "commit", "-m", f"Daily paper pipeline run for {date_str}"])
+    else:
+        print("No new papers found. Skipping commit.")
 
     print("Pipeline complete.")
 
